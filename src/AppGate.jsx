@@ -12,27 +12,22 @@ export default function AppGate() {
   const [offerFaceId, setOfferFaceId] = useState(false);
 
   useEffect(() => {
-    // El escaneo de tickets funciona localmente en el teléfono, sin API paga.
     const cleanupOcr = installReceiptOcrFetchInterceptor();
     return cleanupOcr;
   }, []);
 
   useEffect(() => {
     let alive = true;
-
     async function lockCurrentSession() {
       try {
         const { data } = await supabase.auth.getSession();
-        if (data?.session) {
-          await supabase.auth.signOut({ scope: "local" });
-        }
+        if (data?.session) await supabase.auth.signOut({ scope: "local" });
       } catch (error) {
         console.error("No se pudo bloquear la sesión anterior:", error);
       } finally {
         if (alive) setBooting(false);
       }
     }
-
     lockCurrentSession();
     return () => { alive = false; };
   }, []);
@@ -43,13 +38,11 @@ export default function AppGate() {
         setOfferFaceId(true);
       }
     });
-
     return () => data?.subscription?.unsubscribe();
   }, []);
 
   useEffect(() => {
     if (booting || !localStorage.getItem(FACE_ID_KEY)) return;
-
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       if (cancelled) return;
@@ -65,7 +58,6 @@ export default function AppGate() {
         if (!cancelled) setFaceIdBusy(false);
       }
     }, 350);
-
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -102,35 +94,43 @@ export default function AppGate() {
       <style>{`
         html, body, #root {
           width: 100%;
-          height: 100%;
+          min-height: 100%;
+          height: auto;
           margin: 0;
-          overflow: hidden !important;
-          overscroll-behavior: none;
+          overflow-x: hidden !important;
+          overflow-y: auto !important;
+          overscroll-behavior-y: auto;
           background: #f6f7fb !important;
         }
+        html {
+          -webkit-text-size-adjust: 100%;
+          overflow-y: auto !important;
+        }
         body {
-          position: fixed;
-          inset: 0;
-          touch-action: manipulation;
+          position: relative;
+          min-height: 100dvh;
+          touch-action: pan-y;
+          -webkit-overflow-scrolling: touch;
         }
         .app-safe-shell {
-          position: fixed;
-          inset: 0;
+          position: relative;
           width: 100%;
-          height: 100dvh;
           min-height: 100dvh;
+          height: auto;
           box-sizing: border-box;
           padding-top: max(34px, calc(env(safe-area-inset-top) + 14px));
-          padding-bottom: env(safe-area-inset-bottom);
-          overflow: hidden !important;
-          overscroll-behavior: none;
+          padding-bottom: max(24px, env(safe-area-inset-bottom));
+          overflow: visible !important;
+          overflow-x: hidden !important;
+          overflow-y: visible !important;
+          overscroll-behavior: auto;
           background: #f6f7fb !important;
         }
         .app-safe-shell > div {
           box-sizing: border-box;
-          height: calc(100dvh - max(34px, calc(env(safe-area-inset-top) + 14px)) - env(safe-area-inset-bottom)) !important;
-          min-height: 0 !important;
-          overflow: hidden !important;
+          height: auto !important;
+          min-height: calc(100dvh - max(34px, calc(env(safe-area-inset-top) + 14px)) - env(safe-area-inset-bottom));
+          overflow: visible !important;
           border-radius: 22px 22px 0 0;
           background:
             radial-gradient(circle at 8% 0%, rgba(126,94,255,.18), transparent 26%),
@@ -138,10 +138,9 @@ export default function AppGate() {
             linear-gradient(180deg, #eef0ff 0%, #f8f9fd 30%, #ffffff 68%, #f5f7fc 100%) !important;
           color: #20223a !important;
         }
-        /* El contenido de la app queda debajo de la zona de estado del iPhone. */
         .app-safe-shell header,
         .app-safe-shell [role="banner"] {
-          scroll-margin-top: 12px;
+          scroll-margin-top: max(34px, calc(env(safe-area-inset-top) + 14px));
         }
         .app-safe-shell .fab {
           background: linear-gradient(135deg, #765cff 0%, #4b39df 100%) !important;
