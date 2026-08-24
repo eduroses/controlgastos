@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import App from "./control-de-gastos-final.jsx";
 import { supabase } from "./supabaseClient";
+import { installReceiptOcrFetchInterceptor } from "./receiptOcr";
 
 const FACE_ID_KEY = "controlgastos-passkey-enabled-v1";
 
@@ -9,6 +10,12 @@ export default function AppGate() {
   const [faceIdBusy, setFaceIdBusy] = useState(false);
   const [faceIdMessage, setFaceIdMessage] = useState("");
   const [offerFaceId, setOfferFaceId] = useState(false);
+
+  useEffect(() => {
+    // El escaneo de tickets funciona localmente en el teléfono, sin API paga.
+    const cleanupOcr = installReceiptOcrFetchInterceptor();
+    return cleanupOcr;
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -40,8 +47,6 @@ export default function AppGate() {
     return () => data?.subscription?.unsubscribe();
   }, []);
 
-  // Si Face ID ya fue activado, intentamos iniciar sesión automáticamente
-  // al abrir la app. Esto evita mostrar el antiguo botón flotante permanente.
   useEffect(() => {
     if (booting || !localStorage.getItem(FACE_ID_KEY)) return;
 
@@ -54,9 +59,6 @@ export default function AppGate() {
         const { error } = await supabase.auth.signInWithPasskey();
         if (error) throw error;
       } catch (error) {
-        // Si el navegador no permite mostrar Face ID automáticamente,
-        // dejamos disponible el login normal de la app sin agregar un
-        // cartel flotante que tape la navegación.
         console.warn("Face ID automático no disponible:", error);
         if (!cancelled) setFaceIdMessage("");
       } finally {
@@ -98,28 +100,57 @@ export default function AppGate() {
   return (
     <div className="app-safe-shell">
       <style>{`
-        /* Espacio extra para Dynamic Island, cámara y barra de estado */
+        html, body, #root {
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          overflow: hidden !important;
+          overscroll-behavior: none;
+          background: #f6f7fb !important;
+        }
+        body {
+          position: fixed;
+          inset: 0;
+          touch-action: manipulation;
+        }
         .app-safe-shell {
+          position: fixed;
+          inset: 0;
+          width: 100%;
+          height: 100dvh;
           min-height: 100dvh;
-          padding-top: max(18px, env(safe-area-inset-top));
-          background: #f4f6fb;
+          box-sizing: border-box;
+          padding-top: max(34px, calc(env(safe-area-inset-top) + 14px));
+          padding-bottom: env(safe-area-inset-bottom);
+          overflow: hidden !important;
+          overscroll-behavior: none;
+          background: #f6f7fb !important;
         }
         .app-safe-shell > div {
-          min-height: calc(100dvh - max(18px, env(safe-area-inset-top))) !important;
+          box-sizing: border-box;
+          height: calc(100dvh - max(34px, calc(env(safe-area-inset-top) + 14px)) - env(safe-area-inset-bottom)) !important;
+          min-height: 0 !important;
+          overflow: hidden !important;
+          border-radius: 22px 22px 0 0;
           background:
-            radial-gradient(circle at 12% 2%, rgba(255,255,255,.22), transparent 24%),
-            radial-gradient(circle at 92% 8%, rgba(88,74,245,.28), transparent 30%),
-            linear-gradient(180deg, #6558f5 0%, #5145df 13%, #252447 28%, #11131d 54%, #0e1015 100%) !important;
+            radial-gradient(circle at 8% 0%, rgba(126,94,255,.18), transparent 26%),
+            radial-gradient(circle at 95% 10%, rgba(67,170,255,.15), transparent 28%),
+            linear-gradient(180deg, #eef0ff 0%, #f8f9fd 30%, #ffffff 68%, #f5f7fc 100%) !important;
+          color: #20223a !important;
         }
-        /* Más vida en los elementos principales sin cambiar la funcionalidad */
+        /* El contenido de la app queda debajo de la zona de estado del iPhone. */
+        .app-safe-shell header,
+        .app-safe-shell [role="banner"] {
+          scroll-margin-top: 12px;
+        }
         .app-safe-shell .fab {
           background: linear-gradient(135deg, #765cff 0%, #4b39df 100%) !important;
-          box-shadow: 0 12px 30px rgba(91, 70, 235, .42) !important;
+          box-shadow: 0 12px 30px rgba(91,70,235,.30) !important;
         }
         .app-safe-shell .primary-btn {
           background: linear-gradient(135deg, #765cff 0%, #4b39df 100%) !important;
           color: #fff !important;
-          box-shadow: 0 10px 24px rgba(91, 70, 235, .28) !important;
+          box-shadow: 0 10px 24px rgba(91,70,235,.20) !important;
         }
         .app-safe-shell input:focus,
         .app-safe-shell select:focus {
@@ -149,11 +180,6 @@ export default function AppGate() {
           </div>
         </div>
       )}
-
-      {/* Se eliminó el botón flotante permanente "Ingresar con Face ID".
-          Cuando Face ID ya está configurado, la app intenta activarlo al abrir.
-          Si iOS no permite el aviso automático, queda el login normal sin un
-          elemento flotante tapando la navegación. */}
     </div>
   );
 }
@@ -161,20 +187,20 @@ export default function AppGate() {
 const styles = {
   page: {
     minHeight: "100dvh",
-    background: "linear-gradient(180deg,#6558f5 0%,#252447 45%,#0E1015 100%)",
+    background: "linear-gradient(180deg,#eef0ff 0%,#ffffff 70%,#f5f7fc 100%)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "#F2F1EC",
+    color: "#20223a",
     fontFamily: "Inter, sans-serif",
     padding: "24px",
   },
-  loading: { color: "#fff", fontSize: 14, fontWeight: 600 },
+  loading: { color: "#5145df", fontSize: 14, fontWeight: 700 },
   overlay: {
     position: "fixed",
     inset: 0,
     zIndex: 100,
-    background: "rgba(8,8,18,.72)",
+    background: "rgba(30,32,60,.30)",
     backdropFilter: "blur(12px)",
     WebkitBackdropFilter: "blur(12px)",
     display: "flex",
@@ -185,16 +211,16 @@ const styles = {
   card: {
     width: "100%",
     maxWidth: 420,
-    background: "linear-gradient(180deg,#20213a 0%,#171827 100%)",
-    border: "1px solid rgba(146,129,255,.35)",
+    background: "#ffffff",
+    border: "1px solid rgba(118,92,255,.18)",
     borderRadius: 22,
     padding: 24,
-    boxShadow: "0 20px 60px rgba(0,0,0,.45)",
+    boxShadow: "0 20px 60px rgba(42,39,94,.20)",
     textAlign: "center",
   },
-  title: { margin: "0 0 10px", color: "#fff", fontFamily: "Sora, sans-serif", fontSize: 22 },
-  text: { margin: "0 0 18px", color: "#B7BAD0", fontFamily: "Inter, sans-serif", fontSize: 14, lineHeight: 1.55 },
-  error: { color: "#FF7D96", fontSize: 13, lineHeight: 1.45 },
+  title: { margin: "0 0 10px", color: "#24243a", fontFamily: "Sora, sans-serif", fontSize: 22 },
+  text: { margin: "0 0 18px", color: "#666a80", fontFamily: "Inter, sans-serif", fontSize: 14, lineHeight: 1.55 },
+  error: { color: "#D9485F", fontSize: 13, lineHeight: 1.45 },
   primary: {
     width: "100%",
     border: "none",
@@ -205,5 +231,5 @@ const styles = {
     fontWeight: 800,
     fontSize: 15,
   },
-  secondary: { width: "100%", marginTop: 8, border: "none", background: "transparent", color: "#9296AD", padding: 10, fontSize: 13 },
+  secondary: { width: "100%", marginTop: 8, border: "none", background: "transparent", color: "#777b90", padding: 10, fontSize: 13 },
 };
