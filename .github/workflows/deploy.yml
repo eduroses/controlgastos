@@ -1,32 +1,41 @@
 name: Deploy Control de Gastos to GitHub Pages
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: write
   pages: write
   id-token: write
+
 concurrency:
   group: pages
   cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply account editor and sheet scrolling fix
+
+      - name: Fix account editor and iPhone account sheet
         run: |
           python3 <<'PY'
           from pathlib import Path
           path = Path('src/control-de-gastos-final.jsx')
           text = path.read_text(encoding='utf-8')
-          if 'function AccountsView({ state, onAddAccount, onDeleteAccount, onUpdateAccount' not in text:
-              text = text.replace('  CreditCard,\n  Loader2,\n', '  CreditCard,\n  Loader2,\n  Pencil,\n')
-              text = text.replace('          maxHeight: "88vh",\n          overflowY: "auto",\n', '          maxHeight: "88dvh",\n          overflowY: "auto",\n          WebkitOverflowScrolling: "touch",\n          overscrollBehavior: "contain",\n          touchAction: "pan-y",\n')
-              start = text.index('function AccountsView(')
-              end = text.index('/* ------------------------------------------------------------------ */\n/*  Authentication', start)
-              replacement = '''function AccountsView({ state, onAddAccount, onDeleteAccount, onUpdateAccount, onSignOut }) {
+
+          # Keep the existing imports untouched. The replacement below uses
+          # only icons/helpers already available in the application.
+          start = text.find('function AccountsView(')
+          end_marker = '/* ------------------------------------------------------------------ */\n/*  Authentication'
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('AccountsView markers not found')
+
+          replacement = r'''function AccountsView({ state, onAddAccount, onDeleteAccount, onUpdateAccount, onSignOut }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [name, setName] = useState("");
@@ -35,52 +44,228 @@ jobs:
   const [currency, setCurrency] = useState("$");
   const [customCurrency, setCustomCurrency] = useState("");
   const [balance, setBalance] = useState("");
+  const [saving, setSaving] = useState(false);
+
   const balances = computeBalances(state);
-  const reset = () => { setEditing(null); setName(""); setIcon(ICONS_POOL[0]); setKind("debit"); setCurrency("$"); setCustomCurrency(""); setBalance(""); };
-  const openNew = () => { reset(); setOpen(true); };
-  const openEdit = (account) => { setEditing(account); setName(account.name || ""); setIcon(account.icon || ICONS_POOL[0]); setKind(account.kind || "debit"); setCurrency(account.currency === "$" || account.currency === "US$" ? account.currency : "otra"); setCustomCurrency(account.currency === "$" || account.currency === "US$" ? "" : account.currency || ""); setBalance(String(account.initialBalance ?? 0)); setOpen(true); };
-  const closeSheet = () => { setOpen(false); reset(); };
-  const saveAccount = () => {
-    const cur = currency === "otra" ? customCurrency.trim() || "$" : currency;
-    if (!name.trim()) return;
-    const account = { ...(editing || {}), id: editing?.id || uid("a"), name: name.trim(), icon, color: editing?.color || T.gold, kind, currency: cur, initialBalance: Number(balance) || 0 };
-    if (editing) onUpdateAccount(account); else onAddAccount(account);
-    closeSheet();
+
+  const resetForm = () => {
+    setEditing(null);
+    setName("");
+    setIcon(ICONS_POOL[0]);
+    setKind("debit");
+    setCurrency("$");
+    setCustomCurrency("");
+    setBalance("");
+    setSaving(false);
   };
+
+  const openNew = () => {
+    resetForm();
+    setOpen(true);
+  };
+
+  const openEdit = (account) => {
+    const cur = account.currency || "$";
+    setEditing(account);
+    setName(account.name || "");
+    setIcon(account.icon || ICONS_POOL[0]);
+    setKind(account.kind || "debit");
+    setCurrency(cur === "$" || cur === "US$" ? cur : "otra");
+    setCustomCurrency(cur === "$" || cur === "US$" ? "" : cur);
+    setBalance(String(account.initialBalance ?? 0));
+    setSaving(false);
+    setOpen(true);
+  };
+
+  const closeSheet = () => {
+    setOpen(false);
+    resetForm();
+  };
+
+  const saveAccount = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    const cur = currency === "otra" ? (customCurrency.trim() || "$") : currency;
+    const numericBalance = Number(String(balance).replace(',', '.')) || 0;
+    const account = {
+      ...(editing || {}),
+      id: editing?.id || uid("a"),
+      name: name.trim(),
+      icon,
+      color: editing?.color || T.gold,
+      kind,
+      currency: cur,
+      initialBalance: numericBalance,
+    };
+
+    try {
+      if (editing) await onUpdateAccount(account);
+      else await onAddAccount(account);
+      closeSheet();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const modal = open ? (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) closeSheet(); }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 10000,
+        background: "rgba(15,23,42,0.34)",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        padding: "0",
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: "100%",
+          maxWidth: 680,
+          height: "min(92dvh, 760px)",
+          maxHeight: "92dvh",
+          background: T.surface,
+          borderRadius: "24px 24px 0 0",
+          boxShadow: "0 -12px 40px rgba(15,23,42,0.18)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          paddingTop: "env(safe-area-inset-top, 0px)",
+        }}
+      >
+        <div style={{ flexShrink: 0, padding: "12px 20px 10px", borderBottom: `1px solid ${T.border}` }}>
+          <div style={{ width: 52, height: 5, borderRadius: 99, background: T.textFaint, opacity: .8, margin: "0 auto 12px" }} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <h2 style={{ margin: 0, color: T.text, fontFamily: "Sora, sans-serif", fontSize: 22, fontWeight: 800 }}>{editing ? "Editar cuenta" : "Nueva cuenta"}</h2>
+            <button onClick={closeSheet} className="tap-target" aria-label="Cerrar" style={{ border: "none", background: "none", color: T.textMuted, width: 42, height: 42, fontSize: 30, lineHeight: 1 }}>×</button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "scroll",
+            overflowX: "hidden",
+            WebkitOverflowScrolling: "touch",
+            touchAction: "pan-y",
+            overscrollBehavior: "contain",
+            padding: "18px 20px calc(28px + env(safe-area-inset-bottom, 0px))",
+          }}
+        >
+          <Field label="Nombre">
+            <input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Banco, Visa" autoComplete="off" />
+          </Field>
+
+          <Field label="Tipo de cuenta">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Pill active={kind === "debit"} onClick={() => setKind("debit")}>💵 Débito / efectivo</Pill>
+              <Pill active={kind === "credit"} onClick={() => setKind("credit")}>💳 Tarjeta de crédito</Pill>
+            </div>
+          </Field>
+
+          <Field label="Moneda">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Pill active={currency === "$"} onClick={() => setCurrency("$")}>Pesos ($)</Pill>
+              <Pill active={currency === "US$"} onClick={() => setCurrency("US$")}>Dólares (US$)</Pill>
+              <Pill active={currency === "otra"} onClick={() => setCurrency("otra")}>Otra</Pill>
+            </div>
+            {currency === "otra" && <input style={{ ...inputStyle, marginTop: 10 }} placeholder="Símbolo, ej: R$, €" value={customCurrency} onChange={(e) => setCustomCurrency(e.target.value)} />}
+          </Field>
+
+          <Field label="Ícono">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {ICONS_POOL.map((ic) => (
+                <button key={ic} type="button" onClick={() => setIcon(ic)} className="tap-target" style={{ fontSize: 20, width: 46, height: 46, borderRadius: 12, border: `1px solid ${icon === ic ? T.gold : T.border}`, background: icon === ic ? T.goldSoft : T.surface2 }}>{ic}</button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label={kind === "credit" ? "Deuda inicial" : "Saldo inicial"}>
+            <input style={inputStyle} type="number" inputMode="decimal" value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="0" />
+          </Field>
+
+          <div style={{ height: 20 }} />
+        </div>
+
+        <div style={{ flexShrink: 0, background: T.surface, borderTop: `1px solid ${T.border}`, padding: "12px 20px calc(12px + env(safe-area-inset-bottom, 0px))", boxShadow: "0 -6px 20px rgba(15,23,42,0.06)" }}>
+          <button
+            type="button"
+            disabled={!name.trim() || saving}
+            className="tap-target primary-btn"
+            onClick={saveAccount}
+            style={{ width: "100%", minHeight: 52, opacity: name.trim() && !saving ? 1 : 0.45, fontSize: 16, fontWeight: 800 }}
+          >
+            {saving ? "Guardando…" : editing ? "Guardar cambios" : "Crear cuenta"}
+          </button>
+          {editing && <button type="button" onClick={() => { onDeleteAccount(editing.id); closeSheet(); }} className="tap-target" style={{ width: "100%", marginTop: 6, background: "none", border: "none", color: T.expense, fontFamily: "Inter, sans-serif", fontSize: 13, padding: "7px 0" }}>Eliminar cuenta</button>}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
-    <div style={{ padding: "0 20px 100px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 16px", gap: 8 }}><h1 style={{ fontFamily: "Sora, sans-serif", fontSize: 24, fontWeight: 800, color: T.text, margin: 0 }}>Cuentas</h1><div style={{ display: "flex", gap: 7 }}><button onClick={onSignOut} className="tap-target" style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 10px", color: T.textMuted, fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600 }}>Salir</button><button onClick={openNew} className="tap-target" style={{ background: T.goldSoft, border: `1px solid ${T.gold}55`, borderRadius: 10, padding: "8px 12px", color: T.gold, display: "flex", alignItems: "center", gap: 5, fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 700 }}><Plus size={15} /> Cuenta</button></div></div>
-      {state.accounts.map((a) => { const bal = balances[a.id] || 0; const isCredit = a.kind === "credit"; return <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 12, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 14, marginBottom: 10, boxShadow: "0 4px 18px rgba(23,37,84,0.05)" }}><IconBadge icon={a.icon} color={a.color} size={44} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ color: T.text, fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 15 }}>{a.name}</div><div style={{ color: T.textMuted, fontFamily: "Inter, sans-serif", fontSize: 12 }}>{isCredit ? "Tarjeta de crédito" : "Débito / efectivo"} · {a.currency}</div></div><div style={{ textAlign: "right", flexShrink: 0 }}>{isCredit && <div style={{ color: T.textFaint, fontFamily: "Inter, sans-serif", fontSize: 10.5 }}>debés</div>}<div style={{ color: isCredit ? T.expense : T.text, fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600 }}>{fmtMoney(bal, a.currency)}</div></div><button onClick={() => openEdit(a)} className="tap-target" aria-label={`Editar ${a.name}`} style={{ background: T.goldSoft, border: `1px solid ${T.gold}33`, color: T.gold, width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Pencil size={16} /></button>{state.accounts.length > 1 && <button onClick={() => onDeleteAccount(a.id)} className="tap-target" aria-label={`Eliminar ${a.name}`} style={{ background: "none", border: "none", color: T.textFaint, marginLeft: 0, flexShrink: 0 }}><Trash2 size={16} /></button>}</div>; })}
-      <Sheet open={open} onClose={closeSheet} title={editing ? "Editar cuenta" : "Nueva cuenta"}>
-        <Field label="Nombre"><input style={inputStyle} value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Banco, Visa" /></Field>
-        <Field label="Tipo de cuenta"><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><Pill active={kind === "debit"} onClick={() => { setKind("debit"); if (!editing) setIcon(ICONS_POOL[0]); }}>💵 Débito / efectivo</Pill><Pill active={kind === "credit"} onClick={() => { setKind("credit"); if (!editing) setIcon("💳"); }}>💳 Tarjeta de crédito</Pill></div></Field>
-        <Field label="Moneda"><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{[{ v: "$", l: "Pesos ($)" }, { v: "US$", l: "Dólares (US$)" }, { v: "otra", l: "Otra" }].map((o) => <Pill key={o.v} active={currency === o.v} onClick={() => setCurrency(o.v)}>{o.l}</Pill>)}</div>{currency === "otra" && <input style={{ ...inputStyle, marginTop: 10 }} placeholder="Símbolo, ej: R$, €" value={customCurrency} onChange={(e) => setCustomCurrency(e.target.value)} />}</Field>
-        <Field label="Ícono"><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{ICONS_POOL.map((ic) => <button key={ic} onClick={() => setIcon(ic)} className="tap-target" style={{ fontSize: 20, width: 42, height: 42, borderRadius: 11, border: `1px solid ${icon === ic ? T.gold : T.border}`, background: icon === ic ? T.goldSoft : T.surface2 }}>{ic}</button>)}</div></Field>
-        <Field label={kind === "credit" ? "Deuda inicial" : "Saldo inicial"}><input style={inputStyle} type="number" inputMode="decimal" value={balance} onChange={(e) => setBalance(e.target.value)} placeholder="0" /></Field>
-        <button disabled={!name.trim()} className="tap-target primary-btn" style={{ width: "100%", opacity: name.trim() ? 1 : 0.4 }} onClick={saveAccount}>{editing ? "Guardar cambios" : "Crear cuenta"}</button>
-        {editing && <button onClick={() => { onDeleteAccount(editing.id); closeSheet(); }} className="tap-target" style={{ width: "100%", marginTop: 10, background: "none", border: "none", color: T.expense, fontFamily: "Inter, sans-serif", fontSize: 13, padding: "8px 0" }}>Eliminar cuenta</button>}
-      </Sheet>
+    <div style={{ padding: "0 20px 110px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 16px", gap: 8 }}>
+        <h1 style={{ fontFamily: "Sora, sans-serif", fontSize: 24, fontWeight: 800, color: T.text, margin: 0 }}>Cuentas</h1>
+        <div style={{ display: "flex", gap: 7 }}>
+          <button onClick={onSignOut} className="tap-target" style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 10px", color: T.textMuted, fontFamily: "Inter, sans-serif", fontSize: 12, fontWeight: 600 }}>Salir</button>
+          <button onClick={openNew} className="tap-target" style={{ background: T.goldSoft, border: `1px solid ${T.gold}55`, borderRadius: 10, padding: "8px 12px", color: T.gold, display: "flex", alignItems: "center", gap: 5, fontFamily: "Inter, sans-serif", fontSize: 13, fontWeight: 700 }}><Plus size={15} /> Cuenta</button>
+        </div>
+      </div>
+
+      {state.accounts.map((a) => {
+        const bal = balances[a.id] || 0;
+        const isCredit = a.kind === "credit";
+        return (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 12, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 14, marginBottom: 10, boxShadow: "0 4px 18px rgba(23,37,84,0.05)" }}>
+            <IconBadge icon={a.icon} color={a.color} size={44} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ color: T.text, fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 15 }}>{a.name}</div>
+              <div style={{ color: T.textMuted, fontFamily: "Inter, sans-serif", fontSize: 12 }}>{isCredit ? "Tarjeta de crédito" : "Débito / efectivo"} · {a.currency}</div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              {isCredit && <div style={{ color: T.textFaint, fontFamily: "Inter, sans-serif", fontSize: 10.5 }}>debés</div>}
+              <div style={{ color: isCredit ? T.expense : T.text, fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600 }}>{fmtMoney(bal, a.currency)}</div>
+            </div>
+            <button type="button" onClick={() => openEdit(a)} className="tap-target" aria-label={`Editar ${a.name}`} style={{ background: T.goldSoft, border: `1px solid ${T.gold}33`, color: T.gold, width: 38, height: 38, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 }}>✏️</button>
+            {state.accounts.length > 1 && <button type="button" onClick={() => onDeleteAccount(a.id)} className="tap-target" aria-label={`Eliminar ${a.name}`} style={{ background: "none", border: "none", color: T.textFaint, flexShrink: 0 }}><Trash2 size={16} /></button>}
+          </div>
+        );
+      })}
+
+      {modal}
     </div>
   );
 }
 
 '''
-              text = text[:start] + replacement + text[end:]
-              old = '          {tab === "accounts" && <AccountsView state={state} onAddAccount={(a) => setState((s) => ({ ...s, accounts: [...s.accounts, a] }))} onDeleteAccount={(id) => setState((s) => ({ ...s, accounts: s.accounts.filter((a) => a.id !== id), transactions: s.transactions.filter((t) => t.accountId !== id) }))} onSignOut={handleSignOut} />}\n'
-              new = '          {tab === "accounts" && <AccountsView state={state} onAddAccount={(a) => setState((s) => ({ ...s, accounts: [...s.accounts, a] }))} onUpdateAccount={(a) => setState((s) => ({ ...s, accounts: s.accounts.map((x) => x.id === a.id ? a : x) }))} onDeleteAccount={(id) => setState((s) => ({ ...s, accounts: s.accounts.filter((a) => a.id !== id), transactions: s.transactions.filter((t) => t.accountId !== id) }))} onSignOut={handleSignOut} />}\n'
-              if old not in text: raise SystemExit('AccountsView render not found')
-              text = text.replace(old, new)
-              path.write_text(text, encoding='utf-8')
+
+          text = text[:start] + replacement + text[end:]
+          path.write_text(text, encoding='utf-8')
           PY
+
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/control-de-gastos-final.jsx
-          if git diff --cached --quiet; then echo "No source patch needed"; else git commit -m "Add account editing and improve sheet scrolling"; git push; fi
+          if git diff --cached --quiet; then
+            echo "Account sheet already fixed"
+          else
+            git commit -m "Fix new account sheet scrolling and save button"
+            git push
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm install
       - run: npm run build
       - uses: actions/configure-pages@v5
