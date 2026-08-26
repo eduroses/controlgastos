@@ -15,12 +15,138 @@ export default function AppGate() {
   useEffect(() => { const {data}=supabase.auth.onAuthStateChange((event,session)=>{ if(event==="SIGNED_IN"&&session?.user&&!localStorage.getItem(FACE_ID_KEY))setOfferFace(true); }); return()=>data?.subscription?.unsubscribe(); }, []);
   useEffect(() => { if(booting||!localStorage.getItem(FACE_ID_KEY))return; let cancelled=false; const t=setTimeout(async()=>{ if(cancelled)return; setFaceBusy(true); try{const {error}=await supabase.auth.signInWithPasskey();if(error)throw error;}catch(e){console.warn("Face ID automático no disponible",e)}finally{if(!cancelled)setFaceBusy(false)} },350); return()=>{cancelled=true;clearTimeout(t)}; }, [booting]);
 
-  useEffect(() => { if(booting)return; let cancelled=false,observer; const install=async()=>{ if(cancelled)return; const h=[...document.querySelectorAll("h1")].find(x=>x.textContent.trim()==="Cuentas"); if(!h)return; const parent=h.parentElement; if(!parent||parent.querySelector("[data-cg-open-account-editor]"))return; const {data:{user}}=await supabase.auth.getUser(); if(!user)return; const {data:list}=await supabase.from("accounts").select("*").eq("user_id",user.id).order("created_at"); if(!list?.length)return; setAccounts(list); const b=document.createElement("button"); b.type="button"; b.dataset.cgOpenAccountEditor="1"; b.textContent="✏️ Editar"; b.style.cssText="margin-left:8px;background:#F0EDFF;border:1px solid rgba(101,66,245,.25);color:#6542F5;border-radius:10px;padding:8px 10px;font-weight:700;font-size:12px"; b.onclick=()=>{setAccounts(list);setEditor({...list[0],initial_balance:Number(list[0].initial_balance||0)})}; parent.appendChild(b); }; install(); observer=new MutationObserver(install); observer.observe(document.body,{childList:true,subtree:true}); return()=>{cancelled=true;observer?.disconnect()}; }, [booting]);
+  // iPhone/Safari: make the "Nueva cuenta" sheet itself scrollable.
+  // We do this at runtime because the original component is generated inside App
+  // and its modal markup can vary between builds.
+  useEffect(() => {
+    if (booting) return;
+    let cancelled = false;
+    const applyModalFix = () => {
+      if (cancelled) return;
+      const all = [...document.querySelectorAll("body *")];
+      const title = all.find(el => el.children.length === 0 && (el.textContent || "").trim() === "Nueva cuenta");
+      if (!title) return;
+      let sheet = title.parentElement;
+      for (let i = 0; i < 6 && sheet; i++, sheet = sheet.parentElement) {
+        const rect = sheet.getBoundingClientRect?.();
+        const style = sheet.getAttribute?.("style") || "";
+        if ((rect && rect.width > 280 && rect.height > 300) || /fixed|absolute|88vh|88dvh/.test(style)) break;
+      }
+      if (!sheet) return;
+      sheet.setAttribute("data-cg-new-account-sheet", "1");
+      Object.assign(sheet.style, {
+        maxHeight: "calc(100dvh - max(72px, env(safe-area-inset-top) + 72px))",
+        height: "auto",
+        minHeight: "0",
+        overflowY: "auto",
+        overflowX: "hidden",
+        WebkitOverflowScrolling: "touch",
+        touchAction: "pan-y",
+        overscrollBehavior: "contain",
+        paddingBottom: "calc(150px + env(safe-area-inset-bottom))",
+        boxSizing: "border-box",
+      });
+      // Prevent a parent from stealing the vertical gesture.
+      let p = sheet.parentElement;
+      if (p) Object.assign(p.style, { overflowY: "auto", touchAction: "pan-y", WebkitOverflowScrolling: "touch" });
+    };
+    applyModalFix();
+    const observer = new MutationObserver(applyModalFix);
+    observer.observe(document.body,{childList:true,subtree:true});
+    const timer=setInterval(applyModalFix,500);
+    return()=>{cancelled=true;observer.disconnect();clearInterval(timer)};
+  }, [booting, appVersion]);
 
-  const saveAccount=async()=>{ if(!editor?.id||!editor.name?.trim())return; setBusy(true); try{ const {data:{user}}=await supabase.auth.getUser(); if(!user)throw new Error("Sesión no disponible"); const balance=Number(editor.initial_balance)||0; const payload={name:editor.name.trim(),currency:editor.currency||"$",kind:editor.kind||"debit",icon:editor.icon||"💵",initial_balance:balance}; const {error}=await supabase.from("accounts").update(payload).eq("id",editor.id).eq("user_id",user.id); if(error)throw error; const {data:saved,error:verify}=await supabase.from("accounts").select("*").eq("id",editor.id).eq("user_id",user.id).single(); if(verify)throw verify; if(Number(saved.initial_balance||0)!==balance)throw new Error("No se confirmó el nuevo saldo en Supabase"); const raw=localStorage.getItem("expense-tracker-state-v2"); if(raw){try{const s=JSON.parse(raw);s.accounts=(s.accounts||[]).map(a=>a.id===saved.id?{...a,name:saved.name,currency:saved.currency,kind:saved.kind,icon:saved.icon,color:saved.color||a.color,initialBalance:balance}:a);localStorage.setItem("expense-tracker-state-v2",JSON.stringify(s))}catch{}} setEditor(null); setAppVersion(v=>v+1); }catch(e){console.error(e);alert(e?.message||"No se pudo guardar la cuenta")}finally{setBusy(false)} };
+  // Load all accounts and expose an editor that can select ANY account.
+  useEffect(() => {
+    if (booting) return;
+    let cancelled=false, observer;
+    const install=async()=>{
+      if(cancelled)return;
+      const h=[...document.querySelectorAll("h1")].find(x=>x.textContent.trim()==="Cuentas");
+      if(!h)return;
+      const parent=h.parentElement;
+      if(!parent)return;
+      const {data:{user}}=await supabase.auth.getUser();
+      if(!user)return;
+      const {data:list,error}=await supabase.from("accounts").select("*").eq("user_id",user.id).order("created_at");
+      if(error||!list?.length)return;
+      setAccounts(list);
+
+      // Keep one global editor button, but make the selector contain every account.
+      let global=parent.querySelector("[data-cg-open-account-editor]");
+      if(!global){
+        global=document.createElement("button");
+        global.type="button";
+        global.dataset.cgOpenAccountEditor="1";
+        global.textContent="✏️ Editar cuentas";
+        global.style.cssText="margin-left:8px;background:#F0EDFF;border:1px solid rgba(101,66,245,.25);color:#6542F5;border-radius:10px;padding:8px 10px;font-weight:700;font-size:12px";
+        parent.appendChild(global);
+      }
+      global.onclick=()=>{
+        const first=list[0];
+        setAccounts(list);
+        setEditor(first?{...first,initial_balance:Number(first.initial_balance||0)}:null);
+      };
+
+      // Also add an edit button to every account row when the DOM exposes its name.
+      list.forEach(account=>{
+        const matches=[...document.querySelectorAll("body *")].filter(el=>el.children.length===0 && (el.textContent||"").trim()===account.name);
+        matches.forEach(nameEl=>{
+          let row=nameEl.parentElement;
+          for(let i=0;i<5 && row;i++,row=row.parentElement){
+            if(row.dataset?.cgAccountRow) break;
+            const buttons=row.querySelectorAll?.("button");
+            if(buttons && buttons.length) break;
+          }
+          if(!row || row.dataset?.cgAccountEditAdded===account.id) return;
+          row.dataset.cgAccountEditAdded=account.id;
+          const b=document.createElement("button");
+          b.type="button";
+          b.textContent="✏️";
+          b.title="Editar cuenta";
+          b.style.cssText="margin-left:8px;border:0;background:#F0EDFF;color:#6542F5;border-radius:9px;padding:5px 7px;font-size:12px";
+          b.onclick=(ev)=>{ev.preventDefault();ev.stopPropagation();setAccounts(list);setEditor({...account,initial_balance:Number(account.initial_balance||0)})};
+          row.appendChild(b);
+        });
+      });
+    };
+    install();
+    observer=new MutationObserver(install);
+    observer.observe(document.body,{childList:true,subtree:true});
+    return()=>{cancelled=true;observer?.disconnect()};
+  }, [booting, appVersion]);
+
+  const saveAccount=async()=>{
+    if(!editor?.id||!editor.name?.trim())return;
+    setBusy(true);
+    try{
+      const {data:{user}}=await supabase.auth.getUser();
+      if(!user)throw new Error("Sesión no disponible");
+      const balance=Number(editor.initial_balance)||0;
+      const payload={name:editor.name.trim(),currency:editor.currency||"$",kind:editor.kind||"debit",icon:editor.icon||"💵",initial_balance:balance};
+      const {error}=await supabase.from("accounts").update(payload).eq("id",editor.id).eq("user_id",user.id);
+      if(error)throw error;
+      const {data:saved,error:verify}=await supabase.from("accounts").select("*").eq("id",editor.id).eq("user_id",user.id).single();
+      if(verify)throw verify;
+      if(Number(saved.initial_balance||0)!==balance)throw new Error("No se confirmó el nuevo saldo en Supabase");
+      const raw=localStorage.getItem("expense-tracker-state-v2");
+      if(raw){try{const s=JSON.parse(raw);s.accounts=(s.accounts||[]).map(a=>a.id===saved.id?{...a,name:saved.name,currency:saved.currency,kind:saved.kind,icon:saved.icon,color:saved.color||a.color,initialBalance:balance}:a);localStorage.setItem("expense-tracker-state-v2",JSON.stringify(s))}catch{}}
+      setAccounts(prev=>prev.map(a=>a.id===saved.id?saved:a));
+      setEditor(null);
+      setAppVersion(v=>v+1);
+    }catch(e){console.error(e);alert(e?.message||"No se pudo guardar la cuenta")}
+    finally{setBusy(false)}
+  };
+
   const enableFace=async()=>{setFaceBusy(true);setFaceMsg("");try{const {error}=await supabase.auth.registerPasskey();if(error)throw error;localStorage.setItem(FACE_ID_KEY,"1");setOfferFace(false)}catch(e){setFaceMsg(e?.message||"No se pudo activar Face ID")}finally{setFaceBusy(false)}};
 
   if(booting)return <div style={styles.page}><b>Protegiendo tu cuenta…</b></div>;
-  return <div className="app-safe-shell"><style>{`html,body,#root{width:100%;min-height:100%;height:auto;margin:0;overflow-x:hidden!important;overflow-y:auto!important;background:#f6f7fb!important}body{touch-action:pan-y;-webkit-overflow-scrolling:touch}.app-safe-shell{position:relative;min-height:100dvh;height:auto;padding-top:max(34px,calc(env(safe-area-inset-top) + 14px));overflow:visible!important}.app-safe-shell>div:not(.cg-overlay){height:auto!important;min-height:calc(100dvh - 50px);overflow:visible!important}.app-safe-shell div[style*="88vh"],.app-safe-shell div[style*="88dvh"]{max-height:calc(100dvh - max(34px,env(safe-area-inset-top) + 14px))!important;min-height:0!important;height:auto!important;overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;touch-action:pan-y!important;padding-bottom:calc(120px + env(safe-area-inset-bottom))!important;scrollbar-width:none}.app-safe-shell div[style*="88vh"]::-webkit-scrollbar,.app-safe-shell div[style*="88dvh"]::-webkit-scrollbar{display:none}.cg-overlay{position:fixed!important;inset:0!important;z-index:1000!important}`}</style><App key={appVersion}/>{offerFace&&<div className="cg-overlay" style={styles.overlay}><div style={styles.card}><div style={{fontSize:42}}>🔐</div><h2>Activá Face ID</h2><p>La app te pedirá autenticación al abrirla y podrás usar Face ID.</p>{faceMsg&&<p style={styles.error}>{faceMsg}</p>}<button onClick={enableFace} disabled={faceBusy} style={styles.primary}>{faceBusy?"Activando…":"Activar Face ID"}</button><button onClick={()=>setOfferFace(false)} style={styles.secondary}>Ahora no</button></div></div>}{editor&&<div className="cg-overlay" style={styles.overlay}><div style={{...styles.card,textAlign:"left",maxHeight:"calc(100dvh - 32px)",overflowY:"auto",WebkitOverflowScrolling:"touch",touchAction:"pan-y"}}><h2>Editar cuenta</h2><label style={styles.label}>Cuenta</label><select value={editor.id} onChange={e=>{const a=accounts.find(x=>x.id===e.target.value);if(a)setEditor({...a,initial_balance:Number(a.initial_balance||0)})}} style={styles.input}>{accounts.map(a=><option key={a.id} value={a.id}>{a.icon||"💵"} {a.name}</option>)}</select><label style={styles.label}>Nombre</label><input value={editor.name||""} onChange={e=>setEditor({...editor,name:e.target.value})} style={styles.input}/><label style={styles.label}>Saldo inicial / deuda inicial</label><input type="number" inputMode="decimal" value={editor.initial_balance??0} onChange={e=>setEditor({...editor,initial_balance:e.target.value})} style={styles.input}/><label style={styles.label}>Moneda</label><select value={editor.currency||"$"} onChange={e=>setEditor({...editor,currency:e.target.value})} style={styles.input}><option value="$">Pesos ($)</option><option value="US$">Dólares (US$)</option><option value="€">Euros (€)</option><option value="R$">Reales (R$)</option></select><label style={styles.label}>Tipo</label><select value={editor.kind||"debit"} onChange={e=>setEditor({...editor,kind:e.target.value})} style={styles.input}><option value="debit">Débito / efectivo</option><option value="credit">Tarjeta de crédito</option></select><label style={styles.label}>Ícono</label><div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>{["👛","🏦","💳","💵","🐷","📱","🎯","✈️","🚗","🏡"].map(ic=><button type="button" key={ic} onClick={()=>setEditor({...editor,icon:ic})} style={{width:42,height:42,borderRadius:10,border:editor.icon===ic?"2px solid #6542F5":"1px solid #E4E7F0",background:editor.icon===ic?"#F0EDFF":"#fff",fontSize:20}}>{ic}</button>)}</div><button onClick={saveAccount} disabled={busy} style={{...styles.primary,opacity:busy?.55:1}}>{busy?"Guardando…":"Guardar cambios"}</button><button onClick={()=>setEditor(null)} style={styles.secondary}>Cancelar</button></div></div>}</div>;
+  return <div className="app-safe-shell">
+    <style>{`html,body,#root{width:100%;min-height:100%;height:auto;margin:0;overflow-x:hidden!important;overflow-y:auto!important;background:#f6f7fb!important}body{touch-action:pan-y;-webkit-overflow-scrolling:touch}.app-safe-shell{position:relative;min-height:100dvh;height:auto;padding-top:max(34px,calc(env(safe-area-inset-top) + 14px));overflow:visible!important}.app-safe-shell>div:not(.cg-overlay){height:auto!important;min-height:calc(100dvh - 50px);overflow:visible!important}.app-safe-shell [data-cg-new-account-sheet]{max-height:calc(100dvh - max(72px,env(safe-area-inset-top) + 72px))!important;height:auto!important;min-height:0!important;overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;touch-action:pan-y!important;padding-bottom:calc(150px + env(safe-area-inset-bottom))!important;box-sizing:border-box!important}.app-safe-shell div[style*="88vh"],.app-safe-shell div[style*="88dvh"]{max-height:calc(100dvh - max(72px,env(safe-area-inset-top) + 72px))!important;min-height:0!important;height:auto!important;overflow-y:auto!important;overflow-x:hidden!important;-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important;touch-action:pan-y!important;padding-bottom:calc(150px + env(safe-area-inset-bottom))!important;scrollbar-width:none}.app-safe-shell div[style*="88vh"]::-webkit-scrollbar,.app-safe-shell div[style*="88dvh"]::-webkit-scrollbar{display:none}.cg-overlay{position:fixed!important;inset:0!important;z-index:1000!important;overflow-y:auto!important;touch-action:pan-y!important;-webkit-overflow-scrolling:touch!important}`}</style>
+    <App key={appVersion}/>
+    {offerFace&&<div className="cg-overlay" style={styles.overlay}><div style={styles.card}><div style={{fontSize:42}}>🔐</div><h2>Activá Face ID</h2><p>La app te pedirá autenticación al abrirla y podrás usar Face ID.</p>{faceMsg&&<p style={styles.error}>{faceMsg}</p>}<button onClick={enableFace} disabled={faceBusy} style={styles.primary}>{faceBusy?"Activando…":"Activar Face ID"}</button><button onClick={()=>setOfferFace(false)} style={styles.secondary}>Ahora no</button></div></div>}
+    {editor&&<div className="cg-overlay" style={styles.overlay}><div style={{...styles.card,textAlign:"left",maxHeight:"calc(100dvh - 32px)",overflowY:"auto",WebkitOverflowScrolling:"touch",touchAction:"pan-y"}}><h2>Editar cuenta</h2><label style={styles.label}>Cuenta</label><select value={editor.id} onChange={e=>{const a=accounts.find(x=>x.id===e.target.value);if(a)setEditor({...a,initial_balance:Number(a.initial_balance||0)})}} style={styles.input}>{accounts.map(a=><option key={a.id} value={a.id}>{a.icon||"💵"} {a.name}</option>)}</select><label style={styles.label}>Nombre</label><input value={editor.name||""} onChange={e=>setEditor({...editor,name:e.target.value})} style={styles.input}/><label style={styles.label}>Saldo inicial / deuda inicial</label><input type="number" inputMode="decimal" value={editor.initial_balance??0} onChange={e=>setEditor({...editor,initial_balance:e.target.value})} style={styles.input}/><label style={styles.label}>Moneda</label><select value={editor.currency||"$"} onChange={e=>setEditor({...editor,currency:e.target.value})} style={styles.input}><option value="$">Pesos ($)</option><option value="US$">Dólares (US$)</option><option value="€">Euros (€)</option><option value="R$">Reales (R$)</option></select><label style={styles.label}>Tipo</label><select value={editor.kind||"debit"} onChange={e=>setEditor({...editor,kind:e.target.value})} style={styles.input}><option value="debit">Débito / efectivo</option><option value="credit">Tarjeta de crédito</option></select><label style={styles.label}>Ícono</label><div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:16}}>{["👛","🏦","💳","💵","🐷","📱","🎯","✈️","🚗","🏡"].map(ic=><button type="button" key={ic} onClick={()=>setEditor({...editor,icon:ic})} style={{width:42,height:42,borderRadius:10,border:editor.icon===ic?"2px solid #6542F5":"1px solid #E4E7F0",background:editor.icon===ic?"#F0EDFF":"#fff",fontSize:20}}>{ic}</button>)}</div><button onClick={saveAccount} disabled={busy} style={{...styles.primary,opacity:busy?.55:1}}>{busy?"Guardando…":"Guardar cambios"}</button><button onClick={()=>setEditor(null)} style={styles.secondary}>Cancelar</button></div></div>}
+  </div>;
 }
-const styles={page:{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f6f7fb",fontFamily:"Inter,sans-serif",color:"#172554"},overlay:{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:24,background:"rgba(30,32,60,.30)",backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",overflowY:"auto",touchAction:"pan-y"},card:{width:"100%",maxWidth:420,maxHeight:"calc(100dvh - 32px)",overflowY:"auto",WebkitOverflowScrolling:"touch",background:"#fff",borderRadius:22,padding:24,boxShadow:"0 20px 60px rgba(42,39,94,.20)",color:"#172554"},label:{display:"block",margin:"12px 0 6px",fontSize:12.5,fontWeight:600,color:"#5f6377"},input:{width:"100%",boxSizing:"border-box",border:"1px solid #E4E7F0",borderRadius:12,background:"#F7F5FF",color:"#172554",padding:"12px 13px",fontSize:15,marginBottom:4},primary:{width:"100%",border:0,borderRadius:13,background:"linear-gradient(135deg,#765cff,#4b39df)",color:"#fff",padding:13,fontWeight:700,fontSize:14.5},secondary:{width:"100%",border:0,background:"transparent",color:"#667085",padding:10,fontSize:13},error:{color:"#D9485F",fontSize:13}};
+const styles={page:{minHeight:"100dvh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f6f7fb",fontFamily:"Inter,sans-serif",color:"#172554"},overlay:{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"rgba(30,32,60,.30)",backdropFilter:"blur(12px)",WebkitBackdropFilter:"blur(12px)",overflowY:"auto",touchAction:"pan-y",WebkitOverflowScrolling:"touch"},card:{width:"100%",maxWidth:420,maxHeight:"calc(100dvh - 32px)",overflowY:"auto",WebkitOverflowScrolling:"touch",background:"#fff",borderRadius:22,padding:24,boxShadow:"0 20px 60px rgba(42,39,94,.20)",color:"#172554"},label:{display:"block",margin:"12px 0 6px",fontSize:12.5,fontWeight:600,color:"#5f6377"},input:{width:"100%",boxSizing:"border-box",border:"1px solid #E4E7F0",borderRadius:12,background:"#F7F5FF",color:"#172554",padding:"12px 13px",fontSize:15,marginBottom:4},primary:{width:"100%",border:0,borderRadius:13,background:"linear-gradient(135deg,#765cff,#4b39df)",color:"#fff",padding:13,fontWeight:700,fontSize:14.5},secondary:{width:"100%",border:0,background:"transparent",color:"#667085",padding:10,fontSize:13},error:{color:"#D9485F",fontSize:13}};
